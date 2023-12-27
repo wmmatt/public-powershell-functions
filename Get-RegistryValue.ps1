@@ -1,4 +1,4 @@
-function Get-WindowsRegistryValue {
+function Get-RegistryValue {
     param (
         [string]$Path,
         [string]$Name
