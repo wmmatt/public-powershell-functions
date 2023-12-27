@@ -2,6 +2,7 @@ function Confirm-RegistryValue {
     <#
         .DESCRIPTION
         Checks for a specific value of the key/name you specify and returns $true if the value matches, or $false if the value does not match.
+        Note that if $method value is 'set' that it will change the value to the value you specify. If the $method value is 'test' it will only check for the value that you've specified.
 
         .EXAMPLE
         PS> Confirm-RegistryValue -Path 'HKLM:\\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest' -Name 'UseLogonCredential' -Value 0 -Method test
