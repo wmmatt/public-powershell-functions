@@ -1,8 +1,9 @@
 function Test-WindowsLocalCredential {
     <#
-    .DESCRIPTION
+        .DESCRIPTION
         Returns $true if the cred was good, returns $false of the cred was bad. Works on local users only.
-    .EXAMPLE
+        
+        .EXAMPLE
         PS> Test-WindowsLocalCredential -User Administrator -Pass seCuREPASS44!
         True
 
