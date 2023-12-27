@@ -10,8 +10,8 @@ function Confirm-RegistryValue {
     } catch {
         if ($method -eq 'set') {
             try {
-                New-Item -Path $Path -Force -ErrorAction Stop | Out-Null
-                Set-ItemProperty -Path $Path -Name $Name -Value $Value | Out-Null
+                New-Item -Path $Path -Force -ErrorAction Stop
+                Set-ItemProperty -Path $Path -Name $Name -Value $Value
                 return $true
             } catch {
                 Write-Error "Error creating registry path and setting value: $_"
