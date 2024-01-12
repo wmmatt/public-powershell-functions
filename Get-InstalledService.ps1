@@ -32,6 +32,7 @@ Function Get-InstalledService {
 
     if (!$VerifyServiceRunning) {
         try {
+            # If any service isn't found, throw
             Get-Service -Name $ServiceNameArray -ErrorAction Stop | Out-Null
             return $true
         } catch {
@@ -39,10 +40,13 @@ Function Get-InstalledService {
         }
     } else {
         try {
+            # If any service isn't found, throw
             Get-Service -Name $ServiceNameArray -ErrorAction Stop | Out-Null
             $ServiceNameArray | ForEach {
+                # Verify all services are running
                 $status = Get-Service -Name $_ | Where { $_.Status -ne 'Running' }
                 if ($status) {
+                    # If any are not running, throw
                     throw
                 }
             }

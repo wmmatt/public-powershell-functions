@@ -40,6 +40,7 @@ Function Get-ApplicationInstallStatus {
     $installed = @()
 
     if (!$UserInstallsOnly) {
+        # Check the system location, also known as "install for everyone" locations
         $installed += New-Object psobject -prop @{
             sys32 = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*" | Where-Object { $_.DisplayName -eq $AppName }
             sys64 = Get-ItemProperty "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*" | Where-Object { $_.DisplayName -eq $AppName }
@@ -47,6 +48,7 @@ Function Get-ApplicationInstallStatus {
     }
 
     if (!$SystemInstallsOnly) {
+        # Check the single user install locations
         New-PSDrive -PSProvider Registry -Name HKU -Root HKEY_USERS | Out-Null
         $installed += New-Object psobject -prop @{
             user32 = Get-ItemProperty "HKU:\*\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*" | Where-Object { $_.DisplayName -eq $AppName }
