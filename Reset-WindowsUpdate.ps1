@@ -21,7 +21,7 @@ function Reset-WindowsUpdate {
 
         # Stop Windows Update related services
         $updateServices | ForEach-Object {
-            Stop-Service -Name $_ -Force -ErrorAction Stop
+            Stop-Service -Name $_ -Force -ErrorAction Ignore
         }
 
         # Remove QMGR Data files
