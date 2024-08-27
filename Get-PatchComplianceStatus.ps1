@@ -60,7 +60,7 @@
     $lastPatchedDateFormatted = $lastPatchedDate.ToString("MM/dd/yyyy")
 
     # Return an object with the results
-    return [PSCustomObject]@{
+    return @{
         LastPatchDate = $lastPatchedDateFormatted
         IsCompliant   = $isCompliant
         PatchName     = $patchName
