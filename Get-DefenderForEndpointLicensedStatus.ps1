@@ -1,4 +1,4 @@
-Get-DefenderForEndpointLicensedStatus {
+function Get-DefenderLicensedStatus {
     # Define the registry path and property name
     $registryPath = "HKLM:\SOFTWARE\Microsoft\Windows Advanced Threat Protection\Status"
     $propertyName = "OnboardingState"
