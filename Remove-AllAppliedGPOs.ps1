@@ -1,57 +1,54 @@
 function Remove-AllAppliedGPOs {
     <#
     .DESCRIPTION
-        This function clears all Group Policy Objects (GPOs) by removing the contents of specific directories and registry keys. 
-        It also creates a backup of the current GPO settings with a timestamp before clearing them.
+        This function clears all locally applied Group Policy Objects (GPOs) by removing local policy files and registry entries.
+        It creates a backup of current GPO settings before deletion.
 
     .WARNING
-        This operation is irreversible through this script. Make sure to review the necessity and impact of this action before proceeding.
-        It is recommended to test in a controlled environment before applying to production systems.
+        This action is **irreversible** using this script alone. Ensure backups are stored correctly and test in a non-production environment.
 
     .OUTPUTS
-        Outputs a status message indicating the success or failure of the operation.
+        A success message confirming GPOs have been cleared.
 
     .EXAMPLE
         Remove-AllAppliedGPOs
-        This command clears all the GPOs from the system and backs up the existing policies before deletion.
+        Clears all applied GPOs from the system and stores a backup before deletion.
     #>
 
-    # Set date & time string for backup files
+    # Set date & time string for backup
     $dateString = (Get-Date).ToString("yyyy-MM-dd_HH-mm-ss")
+    $backupPath = "$env:SystemDrive\GPO_Backups\$dateString"
 
-    try {
-        # Backup the contents of GPO folders in the Windows directory
-        $gpUserBackup = "GroupPolicyUsers.bak.$dateString"
-        $gpBackup = "GroupPolicy.bak.$dateString"
+    # Create backup directory
+    New-Item -Path $backupPath -ItemType Directory -Force | Out-Null
 
-        Copy-Item -Path "$env:windir\System32\GroupPolicyUsers" -Destination $gpUserBackup -Recurse -Force -ErrorAction Stop
-        Copy-Item -Path "$env:windir\System32\GroupPolicy" -Destination $gpBackup -Recurse -Force -ErrorAction Stop
+    # Backup GroupPolicy folders
+    Copy-Item -Path "$env:windir\System32\GroupPolicy" -Destination "$backupPath\GroupPolicy.bak" -Recurse -Force -ErrorAction Stop
+    Copy-Item -Path "$env:windir\System32\GroupPolicyUsers" -Destination "$backupPath\GroupPolicyUsers.bak" -Recurse -Force -ErrorAction Stop
 
-        # Remove the contents of GPO folders
-        Remove-Item "$env:windir\System32\GroupPolicyUsers\*" -Recurse -Force -ErrorAction Stop
-        Remove-Item "$env:windir\System32\GroupPolicy\*" -Recurse -Force -ErrorAction Stop
+    # Remove the Group Policy folders
+    Remove-Item -Path "$env:windir\System32\GroupPolicy" -Recurse -Force -ErrorAction Stop
+    Remove-Item -Path "$env:windir\System32\GroupPolicyUsers" -Recurse -Force -ErrorAction Stop
+    New-Item -Path "$env:windir\System32\GroupPolicy" -ItemType Directory -Force | Out-Null
 
-        # Backup and delete Computer level GPO configurations in the registry
-        $policyBackupPath = "HKLM:\SOFTWARE\Policies.bak.$dateString"
-        Rename-Item -Path "HKLM:\SOFTWARE\Policies" -NewName $policyBackupPath -Force -ErrorAction Stop
+    # Backup & Remove Computer Policies (Registry)
+    reg export "HKLM\SOFTWARE\Policies" "$backupPath\Policies_Backup.reg" /y
+    Remove-Item -Path "HKLM:\SOFTWARE\Policies" -Recurse -Force -ErrorAction Stop
 
-        # Delete user-based GPOs under HKEY_CURRENT_USER for each user
-        $UserProfiles = Get-WmiObject -Class Win32_UserProfile | Where-Object { $_.Special -eq $false }
-        $UserProfiles | ForEach-Object {
-            $SID = $_.SID
-            $UserHive = "Registry::HKEY_USERS\$SID\SOFTWARE\Policies"
-
-            if (Test-Path $UserHive) {
-                Remove-Item -Path $UserHive -Recurse -Force -ErrorAction Stop
-            }
+    # Remove User-Based GPOs in Registry (Ensure User Hives Are Loaded)
+    $UserProfiles = Get-WmiObject -Class Win32_UserProfile | Where-Object { $_.Special -eq $false }
+    foreach ($profile in $UserProfiles) {
+        $SID = $profile.SID
+        $UserHive = "Registry::HKEY_USERS\$SID\SOFTWARE\Policies"
+        
+        if (Test-Path $UserHive) {
+            reg export "HKEY_USERS\$SID\SOFTWARE\Policies" "$backupPath\Policies_Backup_$SID.reg" /y
+            Remove-Item -Path $UserHive -Recurse -Force -ErrorAction Stop
         }
-
-        # Force Group Policy update to apply changes
-        gpupdate /force
-
-        Write-Output "All GPOs have been cleared and backed up successfully."
-
-    } catch {
-        Write-Error "An error occurred during the operation: $_"
     }
+
+    # Refresh policies (instead of gpupdate)
+    secedit /refreshpolicy machine_policy /enforce
+
+    Write-Output "All locally applied GPOs have been cleared. Backup stored at: $backupPath"
 }
