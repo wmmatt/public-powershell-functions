@@ -30,10 +30,8 @@ function Enable-ExchangeUnifiedAuditLogIngestion {
     Import-Module ExchangeOnlineManagement -ErrorAction Stop
 
     # 3. Prompt for your admin credentials and connect to Exchange Online.
-    $adminUPN = Read-Host "Please enter your Office 365 admin email address (UserPrincipalName) for connecting to Exchange Online"
-    $credential = Get-Credential -UserName $adminUPN -Message "Please enter your Office 365 admin credentials"
     Write-Output "Connecting to Exchange Online..."
-    Connect-ExchangeOnline -Credential $credential
+    Connect-ExchangeOnline
 
     # 4. Retrieve the current audit log configuration.
     Write-Output "Retrieving current audit log configuration..."
