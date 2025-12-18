@@ -1,54 +1,216 @@
-function Remove-AllAppliedGPOs {
-    <#
-    .DESCRIPTION
-        This function clears all locally applied Group Policy Objects (GPOs) by removing local policy files and registry entries.
-        It creates a backup of current GPO settings before deletion.
+<#
+.SYNOPSIS
+    Removes all locally cached GPO settings from a Windows machine.
 
-    .WARNING
-        This action is **irreversible** using this script alone. Ensure backups are stored correctly and test in a non-production environment.
+.DESCRIPTION
+    Clears locally applied Group Policy by removing:
+    - GroupPolicy and GroupPolicyUsers filesystem folders
+    - HKLM:\SOFTWARE\Policies
+    - HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies
+    - Same paths under each user hive in HKU:\
 
-    .OUTPUTS
-        A success message confirming GPOs have been cleared.
+    Creates timestamped backups before any deletions. Designed for RMM deployment
+    to clean up stale GPO settings after policies are removed from domain controllers.
 
-    .EXAMPLE
-        Remove-AllAppliedGPOs
-        Clears all applied GPOs from the system and stores a backup before deletion.
-    #>
+.NOTES
+    Run as SYSTEM from RMM. Users in HKU are those currently logged in; offline
+    profiles are not modified. A gpupdate /force is triggered at the end to
+    reapply any still-enforced domain policies.
+#>
 
-    # Set date & time string for backup
-    $dateString = (Get-Date).ToString("yyyy-MM-dd_HH-mm-ss")
-    $backupPath = "$env:SystemDrive\GPO_Backups\$dateString"
+#Requires -Version 5.1
 
-    # Create backup directory
-    New-Item -Path $backupPath -ItemType Directory -Force | Out-Null
+function Write-Log {
+    param(
+        [string]$Message,
+        [ValidateSet('INFO','WARN','ERROR','SUCCESS')]
+        [string]$Level = 'INFO'
+    )
+    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $prefix = switch ($Level) {
+        'INFO'    { '[INFO]   ' }
+        'WARN'    { '[WARN]   ' }
+        'ERROR'   { '[ERROR]  ' }
+        'SUCCESS' { '[OK]     ' }
+    }
+    Write-Output "$timestamp $prefix$Message"
+}
 
-    # Backup GroupPolicy folders
-    Copy-Item -Path "$env:windir\System32\GroupPolicy" -Destination "$backupPath\GroupPolicy.bak" -Recurse -Force -ErrorAction Stop
-    Copy-Item -Path "$env:windir\System32\GroupPolicyUsers" -Destination "$backupPath\GroupPolicyUsers.bak" -Recurse -Force -ErrorAction Stop
+function Remove-AllGPOSettings {
+    
+    $dateString = (Get-Date).ToString('yyyy-MM-dd_HH-mm-ss')
+    $backupRoot = "$env:SystemDrive\GPO_Backups\$dateString"
+    
+    Write-Log "Starting GPO removal process"
+    Write-Log "Backup location: $backupRoot"
+    
+    # Create backup directory - abort if this fails since we can't proceed safely
+    try {
+        New-Item -Path $backupRoot -ItemType Directory -Force -ErrorAction Stop | Out-Null
+        Write-Log "Created backup directory" -Level SUCCESS
+    }
+    catch {
+        Write-Log "Failed to create backup directory: $_" -Level ERROR
+        Write-Log "Aborting - cannot proceed without backup location" -Level ERROR
+        exit 1
+    }
 
-    # Remove the Group Policy folders
-    Remove-Item -Path "$env:windir\System32\GroupPolicy" -Recurse -Force -ErrorAction Stop
-    Remove-Item -Path "$env:windir\System32\GroupPolicyUsers" -Recurse -Force -ErrorAction Stop
-    New-Item -Path "$env:windir\System32\GroupPolicy" -ItemType Directory -Force | Out-Null
-
-    # Backup & Remove Computer Policies (Registry)
-    reg export "HKLM\SOFTWARE\Policies" "$backupPath\Policies_Backup.reg" /y
-    Remove-Item -Path "HKLM:\SOFTWARE\Policies" -Recurse -Force -ErrorAction Stop
-
-    # Remove User-Based GPOs in Registry (Ensure User Hives Are Loaded)
-    $UserProfiles = Get-WmiObject -Class Win32_UserProfile | Where-Object { $_.Special -eq $false }
-    foreach ($profile in $UserProfiles) {
-        $SID = $profile.SID
-        $UserHive = "Registry::HKEY_USERS\$SID\SOFTWARE\Policies"
+    # Filesystem policy folders to process
+    $policyFolders = @(
+        "$env:windir\System32\GroupPolicy",
+        "$env:windir\System32\GroupPolicyUsers"
+    )
+    
+    foreach ($folder in $policyFolders) {
+        $folderName = Split-Path $folder -Leaf
         
-        if (Test-Path $UserHive) {
-            reg export "HKEY_USERS\$SID\SOFTWARE\Policies" "$backupPath\Policies_Backup_$SID.reg" /y
-            Remove-Item -Path $UserHive -Recurse -Force -ErrorAction Stop
+        if (Test-Path $folder) {
+            # Backup first
+            try {
+                Copy-Item -Path $folder -Destination "$backupRoot\$folderName.bak" -Recurse -Force -ErrorAction Stop
+                Write-Log "Backed up $folderName" -Level SUCCESS
+            }
+            catch {
+                Write-Log "Failed to backup $folderName`: $_" -Level ERROR
+                Write-Log "Aborting - backup failed" -Level ERROR
+                exit 1
+            }
+            
+            # Then remove
+            try {
+                Remove-Item -Path $folder -Recurse -Force -ErrorAction Stop
+                Write-Log "Removed $folderName" -Level SUCCESS
+            }
+            catch {
+                Write-Log "Failed to remove $folderName`: $_" -Level ERROR
+            }
+        }
+        else {
+            Write-Log "$folderName does not exist, skipping" -Level INFO
+        }
+        
+        # Recreate empty folder - Windows expects these to exist
+        if (-not (Test-Path $folder)) {
+            try {
+                New-Item -Path $folder -ItemType Directory -Force -ErrorAction Stop | Out-Null
+                Write-Log "Recreated empty $folderName" -Level SUCCESS
+            }
+            catch {
+                Write-Log "Failed to recreate $folderName`: $_" -Level WARN
+            }
         }
     }
 
-    # Refresh policies (instead of gpupdate)
-    secedit /refreshpolicy machine_policy /enforce
+    # Machine policy registry keys - these are the two locations where GPO writes machine settings
+    $machinePolicyPaths = @(
+        @{ RegPath = 'HKLM\SOFTWARE\Policies'; PSPath = 'HKLM:\SOFTWARE\Policies' },
+        @{ RegPath = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies'; PSPath = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies' }
+    )
+    
+    Write-Log "Processing machine policy registry keys..."
+    
+    foreach ($policy in $machinePolicyPaths) {
+        $keyName = $policy.RegPath -replace '\\', '_'
+        
+        if (Test-Path $policy.PSPath) {
+            # Backup using reg.exe - handles export better than PowerShell
+            $exportPath = "$backupRoot\$keyName.reg"
+            $regResult = reg export $policy.RegPath $exportPath /y 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Write-Log "Backed up $($policy.RegPath)" -Level SUCCESS
+            }
+            else {
+                Write-Log "Failed to backup $($policy.RegPath): $regResult" -Level ERROR
+                Write-Log "Aborting - registry backup failed" -Level ERROR
+                exit 1
+            }
+            
+            # Remove the key
+            try {
+                Remove-Item -Path $policy.PSPath -Recurse -Force -ErrorAction Stop
+                Write-Log "Removed $($policy.RegPath)" -Level SUCCESS
+            }
+            catch {
+                Write-Log "Failed to remove $($policy.RegPath): $_" -Level ERROR
+            }
+        }
+        else {
+            Write-Log "$($policy.RegPath) does not exist, skipping" -Level INFO
+        }
+    }
 
-    Write-Output "All locally applied GPOs have been cleared. Backup stored at: $backupPath"
+    # User policy registry keys - only processes logged-in users since their hives are loaded in HKU
+    Write-Log "Processing user policy registry keys..."
+    
+    $userProfiles = Get-CimInstance -ClassName Win32_UserProfile | Where-Object { $_.Special -eq $false }
+    
+    if ($userProfiles.Count -eq 0) {
+        Write-Log "No user profiles found in HKU (no users logged in)" -Level WARN
+    }
+    
+    foreach ($profile in $userProfiles) {
+        $sid = $profile.SID
+        $profilePath = $profile.LocalPath
+        $userName = Split-Path $profilePath -Leaf
+        
+        Write-Log "Processing user: $userName ($sid)"
+        
+        # Check if this user's hive is actually loaded
+        if (-not (Test-Path "Registry::HKEY_USERS\$sid")) {
+            Write-Log "  Hive not loaded for $userName, skipping" -Level INFO
+            continue
+        }
+        
+        # User policy paths mirror the machine paths
+        $userPolicyPaths = @(
+            @{ RegPath = "HKU\$sid\SOFTWARE\Policies"; PSPath = "Registry::HKEY_USERS\$sid\SOFTWARE\Policies" },
+            @{ RegPath = "HKU\$sid\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies"; PSPath = "Registry::HKEY_USERS\$sid\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies" }
+        )
+        
+        foreach ($policy in $userPolicyPaths) {
+            $keyName = "User_$($userName)_$($policy.RegPath -replace '\\', '_' -replace "HKU_$sid_", '')"
+            
+            if (Test-Path $policy.PSPath) {
+                # Backup
+                $exportPath = "$backupRoot\$keyName.reg"
+                $regPathForExport = $policy.RegPath -replace '^HKU\\', 'HKEY_USERS\'
+                $regResult = reg export $regPathForExport $exportPath /y 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Log "  Backed up $($policy.RegPath)" -Level SUCCESS
+                }
+                else {
+                    Write-Log "  Failed to backup $($policy.RegPath): $regResult" -Level WARN
+                }
+                
+                # Remove
+                try {
+                    Remove-Item -Path $policy.PSPath -Recurse -Force -ErrorAction Stop
+                    Write-Log "  Removed $($policy.RegPath)" -Level SUCCESS
+                }
+                catch {
+                    Write-Log "  Failed to remove $($policy.RegPath): $_" -Level ERROR
+                }
+            }
+            else {
+                Write-Log "  $($policy.RegPath) does not exist, skipping" -Level INFO
+            }
+        }
+    }
+
+    # Trigger gpupdate to reapply any policies still enforced by the domain
+    Write-Log "Triggering gpupdate to reapply any enforced domain policies..."
+    
+    try {
+        $gpResult = gpupdate /force 2>&1
+        Write-Log "gpupdate completed" -Level SUCCESS
+    }
+    catch {
+        Write-Log "gpupdate failed: $_" -Level WARN
+    }
+
+    # Done
+    Write-Log "GPO removal complete"
+    Write-Log "Backups stored at: $backupRoot"
+    Write-Log "Note: Domain-enforced policies will reapply on next gpupdate cycle"
+    Write-Log "Note: User policies for logged-out users were not modified"
 }
